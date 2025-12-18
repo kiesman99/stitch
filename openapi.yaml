@@ -1,0 +1,550 @@
+openapi: 3.0.0
+info:
+  title: Stitch API
+  description: |
+    REST API for stitching together map tiles from web map services.
+    
+    The Stitch API allows you to create composite images from map tiles by specifying
+    geographic bounds or center points with dimensions. Tiles are downloaded from
+    web map services and stitched together into a single output image.
+    
+    ## Features
+    - Bounding box and centered tile stitching
+    - Single tile source per request
+    - PNG and GeoTIFF output formats
+    - World file generation for georeferencing
+    - Synchronous processing with immediate results
+    
+  version: 2.0.0
+  contact:
+    name: Stitch API Support
+    url: https://github.com/kiesman99/stitch
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+  - url: https://api.stitch.example.com/v1
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Returns the health status of the API service
+      operationId: getHealth
+      tags:
+        - System
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /stitch:
+    post:
+      summary: Create a stitched tile image
+      description: |
+        Creates a stitched tile image from the specified tile sources and geographic bounds.
+        The image is processed synchronously and returned directly in the response.
+        
+        Supports both bounding box mode (specify geographic bounds) and centered mode 
+        (specify center point with pixel dimensions).
+        
+        If the tile source is unreachable or returns errors, the API will respond with 
+        appropriate error codes and details about the failure.
+      operationId: createStitchedImage
+      tags:
+        - Stitching
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StitchRequest'
+            examples:
+              bounding_box:
+                summary: Bounding box example
+                value:
+                  mode: "bbox"
+                  bbox:
+                    min_lat: 37.371794
+                    min_lon: -122.917099
+                    max_lat: 38.226853
+                    max_lon: -121.564407
+                  zoom: 10
+                  tile_source:
+                    url: "http://a.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    name: "OpenStreetMap"
+                  output:
+                    format: "png"
+                    tile_size: 256
+              centered:
+                summary: Centered mode example
+                value:
+                  mode: "centered"
+                  center:
+                    lat: 35.6824
+                    lon: 139.7531
+                    width: 640
+                    height: 480
+                  zoom: 10
+                  tile_source:
+                    url: "http://b.tile.stamen.com/watercolor/{z}/{x}/{y}.jpg"
+                    name: "Stamen Watercolor"
+                  output:
+                    format: "png"
+                    tile_size: 256
+              with_worldfile:
+                summary: Generate world file for georeferencing
+                value:
+                  mode: "bbox"
+                  bbox:
+                    min_lat: 37.37
+                    min_lon: -122.92
+                    max_lat: 38.23
+                    max_lon: -121.56
+                  zoom: 10
+                  tile_source:
+                    url: "http://a.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    name: "OpenStreetMap"
+                  output:
+                    format: "png"
+                    generate_worldfile: true
+      responses:
+        '200':
+          description: Stitched image created successfully
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/tiff:
+              schema:
+                type: string
+                format: binary
+          headers:
+            X-Stitch-Bounds:
+              description: Geographic bounds of the stitched image (min_lat,min_lon,max_lat,max_lon)
+              schema:
+                type: string
+                example: "37.371794,-122.917099,38.226853,-121.564407"
+            X-Stitch-Zoom:
+              description: Zoom level used
+              schema:
+                type: integer
+                example: 10
+            X-Stitch-Dimensions:
+              description: Image dimensions in pixels (widthxheight)
+              schema:
+                type: string
+                example: "1024x768"
+            X-Stitch-Tile-Count:
+              description: Total number of tiles used in the stitched image
+              schema:
+                type: integer
+                example: 12
+            Content-Disposition:
+              description: Suggested filename for download
+              schema:
+                type: string
+                example: 'attachment; filename="stitched_map.png"'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_coordinates:
+                  summary: Invalid coordinates
+                  value:
+                    error: "INVALID_COORDINATES"
+                    message: "max_lat must be greater than min_lat"
+                    request_id: "req_123456789"
+                invalid_zoom:
+                  summary: Invalid zoom level
+                  value:
+                    error: "INVALID_ZOOM"
+                    message: "zoom level must be between 0 and 20"
+                    request_id: "req_123456789"
+        '422':
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
+              examples:
+                missing_required_fields:
+                  summary: Missing required fields
+                  value:
+                    error: "VALIDATION_ERROR"
+                    message: "Request validation failed"
+                    validation_errors:
+                      - field: "zoom"
+                        message: "zoom is required"
+                        code: "REQUIRED"
+                      - field: "tile_source"
+                        message: "tile_source is required"
+                        code: "REQUIRED"
+                    request_id: "req_123456789"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Bad Gateway - Error downloading tiles from tile server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TileErrorResponse'
+              examples:
+                tile_server_error:
+                  summary: Tile server returned error
+                  value:
+                    error: "TILE_SERVER_ERROR"
+                    message: "Failed to download tiles from tile server"
+                    failed_tiles:
+                      - url: "http://a.tile.openstreetmap.org/10/163/395.png"
+                        status_code: 404
+                        error: "Tile not found"
+                      - url: "http://a.tile.openstreetmap.org/10/163/396.png"
+                        status_code: 500
+                        error: "Internal server error"
+                    successful_tiles: 8
+                    total_tiles: 10
+                    request_id: "req_123456789"
+        '504':
+          description: Gateway Timeout - Tile server request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                timeout:
+                  summary: Tile server timeout
+                  value:
+                    error: "TILE_SERVER_TIMEOUT"
+                    message: "Tile server requests timed out"
+                    details:
+                      timeout_seconds: 30
+                      failed_urls:
+                        - "http://slow.tile.server.com/10/163/395.png"
+                    request_id: "req_123456789"
+
+components:
+  schemas:
+    StitchRequest:
+      type: object
+      required:
+        - mode
+        - zoom
+        - tile_source
+      properties:
+        mode:
+          type: string
+          enum: [bbox, centered]
+          description: Stitching mode - either bounding box or centered
+          example: "bbox"
+        bbox:
+          $ref: '#/components/schemas/BoundingBox'
+        center:
+          $ref: '#/components/schemas/CenterPoint'
+        zoom:
+          type: integer
+          minimum: 0
+          maximum: 20
+          description: Zoom level for tile retrieval
+          example: 10
+        tile_source:
+          $ref: '#/components/schemas/TileSource'
+          description: Single tile source to use for stitching
+        output:
+          $ref: '#/components/schemas/OutputOptions'
+      oneOf:
+        - allOf:
+            - properties:
+                mode:
+                  enum: [bbox]
+            - required: [bbox]
+        - allOf:
+            - properties:
+                mode:
+                  enum: [centered]
+            - required: [center]
+
+    BoundingBox:
+      type: object
+      required:
+        - min_lat
+        - min_lon
+        - max_lat
+        - max_lon
+      properties:
+        min_lat:
+          type: number
+          minimum: -90
+          maximum: 90
+          description: Minimum latitude (south boundary)
+          example: 37.371794
+        min_lon:
+          type: number
+          minimum: -180
+          maximum: 180
+          description: Minimum longitude (west boundary)
+          example: -122.917099
+        max_lat:
+          type: number
+          minimum: -90
+          maximum: 90
+          description: Maximum latitude (north boundary)
+          example: 38.226853
+        max_lon:
+          type: number
+          minimum: -180
+          maximum: 180
+          description: Maximum longitude (east boundary)
+          example: -121.564407
+
+    CenterPoint:
+      type: object
+      required:
+        - lat
+        - lon
+        - width
+        - height
+      properties:
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+          description: Center latitude
+          example: 35.6824
+        lon:
+          type: number
+          minimum: -180
+          maximum: 180
+          description: Center longitude
+          example: 139.7531
+        width:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Image width in pixels
+          example: 640
+        height:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Image height in pixels
+          example: 480
+
+    TileSource:
+      type: object
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+          pattern: '.*\{z\}.*\{x\}.*\{y\}.*'
+          description: |
+            Tile URL template with {z}, {x}, {y} placeholders.
+            The server will replace these placeholders with actual tile coordinates.
+          example: "http://a.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        name:
+          type: string
+          maxLength: 100
+          description: Human-readable name for the tile source (optional, used for logging)
+          example: "OpenStreetMap"
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          maxProperties: 5
+          description: Additional HTTP headers to send with tile requests (optional)
+          example:
+            User-Agent: "stitch/2.0.0"
+            Referer: "https://example.com"
+
+    OutputOptions:
+      type: object
+      properties:
+        format:
+          type: string
+          enum: [png, geotiff]
+          default: png
+          description: Output image format
+        tile_size:
+          type: integer
+          enum: [256, 512, 1024]
+          default: 256
+          description: Expected tile size in pixels (tiles must match this size)
+        quality:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 90
+          description: Output quality for JPEG-based formats (currently unused)
+        generate_worldfile:
+          type: boolean
+          default: false
+          description: Whether to generate a world file for georeferencing (returned as separate endpoint)
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: Overall health status
+          example: "healthy"
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the health check
+        version:
+          type: string
+          description: API version
+          example: "2.0.0"
+        uptime:
+          type: integer
+          description: Service uptime in seconds
+          example: 3600
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code
+          example: "INVALID_COORDINATES"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Invalid bounding box coordinates: max_lat must be greater than min_lat"
+        details:
+          type: object
+          additionalProperties: true
+          description: Additional error details
+        request_id:
+          type: string
+          description: Unique identifier for the request (for debugging)
+          example: "req_123456789"
+
+    ValidationErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+        - validation_errors
+      properties:
+        error:
+          type: string
+          enum: [VALIDATION_ERROR]
+          description: Error code for validation failures
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Request validation failed"
+        validation_errors:
+          type: array
+          items:
+            type: object
+            required:
+              - field
+              - message
+            properties:
+              field:
+                type: string
+                description: Field that failed validation
+                example: "zoom"
+              message:
+                type: string
+                description: Validation error message
+                example: "must be between 0 and 20"
+              code:
+                type: string
+                description: Machine-readable validation error code
+                example: "OUT_OF_RANGE"
+        request_id:
+          type: string
+          description: Unique identifier for the request
+
+    TileErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+        - failed_tiles
+        - successful_tiles
+        - total_tiles
+      properties:
+        error:
+          type: string
+          description: Error code for tile-related failures
+          example: "TILE_SERVER_ERROR"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Failed to download tiles from tile server"
+        failed_tiles:
+          type: array
+          items:
+            type: object
+            required:
+              - url
+              - error
+            properties:
+              url:
+                type: string
+                description: URL of the failed tile
+                example: "http://a.tile.openstreetmap.org/10/163/395.png"
+              status_code:
+                type: integer
+                description: HTTP status code returned by tile server
+                example: 404
+              error:
+                type: string
+                description: Error message from tile server
+                example: "Tile not found"
+        successful_tiles:
+          type: integer
+          description: Number of tiles successfully downloaded
+          example: 8
+        total_tiles:
+          type: integer
+          description: Total number of tiles attempted
+          example: 10
+        request_id:
+          type: string
+          description: Unique identifier for the request
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication (optional for development)
+
+security:
+  - ApiKeyAuth: []
+  - {} # Allow unauthenticated access
+
+tags:
+  - name: System
+    description: System health and status endpoints
+  - name: Stitching
+    description: Tile stitching operations
